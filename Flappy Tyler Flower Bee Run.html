@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flappy Tyler: Flower Bee Run</title>
+  <style>
+    :root{--bg:#0b1020;--fg:#f4f4f4;--muted:#9aa3b2;--accent:#ffd34d;--good:#7CFC00;--bad:#ff4d4f}
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; display:grid; place-items:center; background:radial-gradient(1000px 600px at 50% -10%, #142241, var(--bg)); color:var(--fg); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    }
+    .wrap{display:flex; flex-direction:column; gap:12px; align-items:center;}
+    h1{margin:0; font-weight:800; letter-spacing:0.5px; font-size:clamp(18px, 2.6vw, 26px)}
+    .meta{opacity:.8; font-size:12px}
+    canvas{
+      width:min(92vw, 420px); /* crisp scaling */
+      height:auto;
+      image-rendering: pixelated; image-rendering: crisp-edges; border-radius:16px; box-shadow:0 10px 35px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.05);
+      background:#ffb566; /* laranja para combinar com o céu */
+    }
+    .controls{opacity:.9; font-size:12px}
+    .btn{cursor:pointer; background:#1f2a48; color:#fff; border:1px solid rgba(255,255,255,.12); padding:8px 12px; border-radius:12px; transition:transform .06s ease, box-shadow .2s ease}
+    .btn:active{transform:translateY(1px)}
+    a { color: var(--accent); text-decoration: none; }
+    #testBadge{position:fixed; top:8px; right:8px; background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); padding:6px 8px; border-radius:10px; font-size:11px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🌻 Flappy Tyler: Flower Bee Run</h1>
+    <div class="meta">Toque / clique ou pressione <kbd>Espaço</kbd> para voar — Tyler montado em uma abelha</div>
+    <canvas id="game" width="160" height="288" aria-label="Jogo estilo Flappy Bird com girassóis"></canvas>
+    <div class="controls">
+      <button id="btnRestart" class="btn" hidden>Reiniciar</button>
+    </div>
+  </div>
+  <div id="testBadge" aria-live="polite" title="Resultados rápidos dos testes"></div>
+
+  <script>
+  (function(){
+    const cvs = document.getElementById('game');
+    const c = cvs.getContext('2d');
+    const W = cvs.width, H = cvs.height;
+
+    // ---------- Utilities ----------
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const rand = (a,b)=> a + Math.random()*(b-a);
+
+    // ---------- Audio (tiny bleeps) ----------
+    let audioCtx;
+    function ensureAudio(){
+      if(!audioCtx){
+        const AC = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AC();
+      }
+      if(audioCtx.state === 'suspended') audioCtx.resume();
+    }
+    function beep(type='sine', f=600, t=0.08, gain=0.06){
+      if(!audioCtx) return;
+      const now = audioCtx.currentTime;
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = type; o.frequency.value = f;
+      g.gain.setValueAtTime(gain, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + t);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(now); o.stop(now + t);
+    }
+
+    // ---------- Game State ----------
+    const state = {
+      running: false,
+      started: false,
+      gameOver: false,
+      tick: 0,
+      score: 0,
+      best: parseInt(localStorage.getItem('flappyTylerBest')||'0',10),
+      speed: 0.9, // base scroll speed (pixels per frame at 160px wide canvas)
+      pipes: [],
+      groundY: H - 28
+    };
+
+    // Player (Tyler-ish pixel dude)
+    const player = {
+      x: 40,
+      y: H/2,
+      vy: 0,
+      g: 0.25, // gravity
+      flap: -4.1,
+      w: 14, h: 12,
+      rot: 0
+    };
+
+    // Pipe (Sunflower) config
+    const PIPE = { gap: 66, spacing: 86, w: 18 };
+
+    function reset(){
+      state.pipes = [];
+      state.tick = 0; state.score = 0; state.speed = 0.9; state.gameOver = false; state.started=false; state.running=false;
+      player.y = H/2; player.vy = 0; player.rot = 0;
+      document.getElementById('btnRestart').hidden = true;
+      spawnPipe(); // spawn initial so it feels alive
+      draw();
+    }
+
+    function start(){
+      if(state.gameOver) return;
+      ensureAudio();
+      state.started = true; state.running = true;
+      loop();
+    }
+
+    function gameOver(){
+      state.gameOver = true; state.running = false;
+      state.best = Math.max(state.best, state.score);
+      localStorage.setItem('flappyTylerBest', state.best);
+      beep('sawtooth', 180, 0.15, 0.08);
+      document.getElementById('btnRestart').hidden = false;
+      draw();
+    }
+
+    function spawnPipe(){
+      // sunflower pair with a vertical gap
+      const margin = 24;
+      const gapY = rand(margin, H - margin - PIPE.gap - 28); // avoid ground
+      const x = W + 10;
+      state.pipes.push({ x, gapY, passed:false });
+    }
+
+    // ---------- Input ----------
+    function flap(){
+      if(!state.started){ start(); }
+      if(state.gameOver){ return; }
+      ensureAudio();
+      player.vy = player.flap; // impulse
+      beep('triangle', 740, 0.07, 0.07);
+    }
+    window.addEventListener('keydown', (e)=>{
+      if(e.code === 'Space'){ e.preventDefault(); flap(); }
+      if(state.gameOver && (e.code==='Space' || e.code==='Enter')) reset();
+    });
+    cvs.addEventListener('pointerdown', (e)=>{ flap(); });
+    document.getElementById('btnRestart').addEventListener('click', reset);
+
+    // ---------- Loop ----------
+    let rafId;
+    function loop(){
+      if(!state.running) return;
+      update();
+      draw();
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function update(){
+      state.tick++;
+
+      // difficulty curve: slowly increase speed, reduce gap slightly
+      state.speed = clamp(0.9 + state.score*0.02, 0.9, 2.1);
+      PIPE.gap = clamp(66 - state.score*1.2, 48, 66);
+
+      // spawn
+      if(state.tick % Math.floor(PIPE.spacing / state.speed) === 0){
+        spawnPipe();
+      }
+
+      // player physics
+      player.vy += player.g;
+      player.y += player.vy;
+      player.rot = clamp(player.vy * 0.06, -0.5, 0.7);
+
+      // pipes move & scoring
+      for(const p of state.pipes){
+        p.x -= state.speed * 2.0; // scroll speed
+        if(!p.passed && p.x + PIPE.w < player.x){
+          p.passed = true; state.score++; beep('square', 900, 0.05, 0.05);
+        }
+      }
+      // cleanup offscreen
+      state.pipes = state.pipes.filter(p=> p.x > -PIPE.w-8);
+
+      // collisions
+      const hitGround = player.y + player.h/2 >= state.groundY;
+      const hitTop = player.y - player.h/2 <= 0;
+
+      if(hitGround || hitTop){ gameOver(); return; }
+
+      // check vs sunflower stems & heads
+      for(const p of state.pipes){
+        // define rectangles for stems
+        const stemX = Math.floor(p.x);
+        const stemW = PIPE.w;
+        const topStem = {x:stemX, y:0, w:stemW, h:p.gapY};
+        const botStem = {x:stemX, y:p.gapY+PIPE.gap, w:stemW, h:state.groundY-(p.gapY+PIPE.gap)};
+        if(rectHitsPlayer(topStem) || rectHitsPlayer(botStem)) { gameOver(); return; }
+        // sunflower heads (circles)
+        const headR = 10; // radius
+        const topHead = {cx: stemX + stemW/2, cy: p.gapY, r: headR};
+        const botHead = {cx: stemX + stemW/2, cy: p.gapY + PIPE.gap, r: headR};
+        if(circleHitsPlayer(topHead) || circleHitsPlayer(botHead)){ gameOver(); return; }
+      }
+    }
+
+    function rectHitsPlayer(r){
+      const px = player.x - player.w/2, py = player.y - player.h/2;
+      return !(px + player.w < r.x || px > r.x + r.w || py + player.h < r.y || py > r.y + r.h);
+    }
+    function circleHitsPlayer(circ){
+      const closestX = clamp(player.x, circ.cx - circ.r, circ.cx + circ.r);
+      const closestY = clamp(player.y, circ.cy - circ.r, circ.cy + circ.r);
+      const dx = player.x - closestX, dy = player.y - closestY;
+      return (dx*dx + dy*dy) < (circ.r * circ.r);
+    }
+
+    // ---------- Drawing ----------
+    function draw(){
+      // sky
+      drawSky();
+      // parallax hills
+      drawHills();
+      // pipes
+      for(const p of state.pipes){ drawSunflowerPair(p); }
+      // ground
+      drawGround();
+      // player
+      drawTyler();
+      // UI
+      drawUI();
+    }
+
+    // NEW: define drawCloud before it's used
+    function drawCloud(x,y){
+      c.save(); c.translate(x,y);
+      c.fillRect(0,4,18,6); c.fillRect(4,0,10,10); c.fillRect(14,6,8,4);
+      c.restore();
+    }
+
+    function drawSky(){
+      const g = c.createLinearGradient(0,0,0,H);
+      g.addColorStop(0, '#ffb566');
+      g.addColorStop(1, '#ff7a3d');
+      c.fillStyle = g; c.fillRect(0,0,W,H);
+      // soft sun glow
+      c.fillStyle = 'rgba(255, 255, 200, 0.15)';
+      c.beginPath(); c.arc(W-20, 18, 18, 0, Math.PI*2); c.fill();
+      // tiny warm clouds
+      c.fillStyle = 'rgba(255,240,220,.85)';
+      const t = (state.tick||0)*0.2;
+      for(let i=0;i<3;i++){
+        const x = (W - ((t + i*50) % (W+40))) - 30;
+        const y = 22 + i*22;
+        drawCloud(x,y);
+      }
+    }
+
+    function drawHills(){
+      c.fillStyle = '#8ad66b';
+      c.fillRect(0, H-60, W, 60);
+      c.fillStyle = '#6cc05b';
+      for(let i=0;i<4;i++){
+        const x = (W - ((state.tick*0.5 + i*50) % (W+60))) - 30;
+        c.fillRect(x, H-40, 40, 8);
+        c.fillRect(x+10, H-48, 18, 6);
+      }
+    }
+
+    function drawGround(){
+      // dirt strip
+      c.fillStyle = '#6b4f2a';
+      c.fillRect(0, state.groundY, W, H - state.groundY);
+      // pixel grass tiles
+      for(let x=0;x<W;x+=8){
+        c.fillStyle = (Math.floor((x + state.tick)%16) < 8) ? '#3fa34d' : '#2f8c3a';
+        c.fillRect(x, state.groundY-2, 8, 2);
+      }
+    }
+
+    function drawSunflowerPair(p){
+      const x = Math.floor(p.x);
+      const stemW = PIPE.w;
+      const headR = 10;
+      // stems
+      c.fillStyle = '#2f8c3a';
+      c.fillRect(x, 0, stemW, p.gapY); // top stem
+      c.fillRect(x, p.gapY + PIPE.gap, stemW, state.groundY - (p.gapY + PIPE.gap)); // bottom stem
+      // leaves
+      c.fillStyle = '#3fa34d';
+      c.fillRect(x-6, p.gapY-10, 6, 6);
+      c.fillRect(x+stemW, p.gapY-18, 6, 6);
+      c.fillRect(x-6, p.gapY+PIPE.gap+6, 6, 6);
+      c.fillRect(x+stemW, p.gapY+PIPE.gap+12, 6, 6);
+      // heads (petals + center)
+      drawSunflowerHead(x+stemW/2, p.gapY, headR);
+      drawSunflowerHead(x+stemW/2, p.gapY + PIPE.gap, headR);
+    }
+
+    function drawSunflowerHead(cx, cy, r){
+      c.save(); c.translate(cx, cy);
+      // petals
+      c.fillStyle = '#ffd34d';
+      for(let i=0;i<12;i++){
+        const ang = i * Math.PI*2/12;
+        const px = Math.cos(ang)*(r+2);
+        const py = Math.sin(ang)*(r+2);
+        c.fillRect(Math.round(px)-2, Math.round(py)-2, 4, 4);
+      }
+      // center
+      c.fillStyle = '#8b5a2b';
+      c.beginPath(); c.arc(0,0,r-3,0,Math.PI*2); c.closePath(); c.fill();
+      // seeds dots
+      c.fillStyle = '#5a3a1e';
+      for(let i=0;i<6;i++){
+        const a = i * Math.PI*2/6 + 0.2;
+        c.fillRect(Math.round(Math.cos(a)*(r-6))-1, Math.round(Math.sin(a)*(r-6))-1, 2, 2);
+      }
+      c.restore();
+    }
+
+    function drawTyler(){
+      c.save();
+      c.translate(player.x, player.y);
+      c.rotate(player.rot);
+
+      // shadow
+      c.fillStyle = 'rgba(0,0,0,.2)'; c.fillRect(-12, 8, 24, 5);
+
+      // === Bee (mount) ===
+      // body
+      c.fillStyle = '#ffd34d'; c.fillRect(-12,-2,24,12); // yellow base
+      c.fillStyle = '#222'; c.fillRect(-12,2,24,4); // central black stripe
+      c.fillRect(-12,-2,24,2); // top stripe edge dark
+      // head
+      c.fillStyle = '#222'; c.fillRect(-16,-1,6,6);
+      // eye
+      c.fillStyle = '#fff'; c.fillRect(-14,0,2,2);
+      // stinger
+      c.fillStyle = '#222'; c.fillRect(12,0,3,3);
+      // wings (translucent)
+      c.fillStyle = 'rgba(240,250,255,.7)';
+      c.fillRect(-2,-8,6,6); c.fillRect(2,-10,6,6);
+
+      // simple legs under body
+      c.fillStyle = '#333'; c.fillRect(-8,10,4,2); c.fillRect(0,10,4,2); c.fillRect(8,10,4,2);
+
+      // === Tyler (Flower Boy era) ===
+      // legs (jeans)
+      c.fillStyle = '#7fb3ff'; c.fillRect(-4,-6,3,8); c.fillRect(1,-6,3,8);
+      // shoes
+      c.fillStyle = '#111'; c.fillRect(-4,2,3,2); c.fillRect(1,2,3,2);
+      // torso (camiseta branca)
+      c.fillStyle = '#ffffff'; c.fillRect(-6,-12,12,8);
+      // braços
+      c.fillStyle = '#ffffff'; c.fillRect(-9,-11,3,6); c.fillRect(6,-11,3,6);
+      // mãos (pele)
+      c.fillStyle = '#f6c59f'; c.fillRect(-9,-6,3,2); c.fillRect(6,-6,3,2);
+      // cabeça
+      c.fillStyle = '#f6c59f'; c.fillRect(-4,-18,8,6);
+      // boné verde (inspirado em Flower Boy)
+      c.fillStyle = '#6fd47f'; c.fillRect(-5,-20,10,3); // topo
+      c.fillRect(-6,-17,12,2); // aba
+      // óculos simples
+      c.fillStyle = '#111'; c.fillRect(-3,-16,3,2); c.fillRect(1,-16,3,2);
+
+      // pose: ligeiramente inclinado segurando a abelha
+      c.fillStyle = '#f6c59f'; c.fillRect(-1,-8,2,3); // mão no dorso da abelha
+
+      c.restore();
+    }
+
+    function drawUI(){
+      // score box
+      c.fillStyle = 'rgba(0,0,0,.35)'; c.fillRect(4,4,46,18);
+      c.fillStyle = '#fff'; c.font = '8px monospace'; c.textAlign='left'; c.textBaseline='top';
+      c.fillText('Pontos', 6, 6);
+      c.font = 'bold 10px monospace'; c.fillText(String(state.score).padStart(2,'0'), 6, 14);
+
+      // best
+      c.textAlign='right';
+      c.font = '8px monospace'; c.fillText('Recorde '+state.best, W-6, 6);
+
+      if(!state.started && !state.gameOver){
+        drawCenterCard('Toque/Pressione para voar', 'Passe pelos girassóis!');
+      }
+      if(state.gameOver){
+        drawCenterCard('Fim de jogo', 'Pontos: '+state.score+'  —  Recorde: '+state.best);
+      }
+    }
+
+    function drawCenterCard(title, subtitle){
+      const cardW = 132, cardH = 56;
+      const x = (W-cardW)/2, y = (H-cardH)/2 - 12;
+      c.fillStyle = 'rgba(0,0,0,.45)'; c.fillRect(x, y, cardW, cardH);
+      c.fillStyle = '#fff';
+      c.font = 'bold 12px monospace'; c.textAlign='center'; c.textBaseline='top';
+      c.fillText(title, W/2, y+8);
+      c.font = '8px monospace';
+      c.fillText(subtitle, W/2, y+24);
+      c.font = '7px monospace'; c.fillStyle = '#fffa';
+      c.fillText('Clique/Toque ou Espaço', W/2, y+38);
+    }
+
+    // ---------- Lightweight Self Tests ----------
+    function runSelfTests(){
+      const badge = document.getElementById('testBadge');
+      const results = [];
+      const assert = (name, cond) => results.push({ name, passed: !!cond });
+
+      // Save player position to restore later
+      const savePlayer = { x: player.x, y: player.y, w: player.w, h: player.h };
+      try {
+        assert('drawCloud definido', typeof drawCloud === 'function');
+        assert('reset cria pelo menos 1 girassol', (state.pipes && state.pipes.length >= 1));
+
+        // rectHitsPlayer: rectangle far away should be false
+        player.x = 40; player.y = 100; player.w = 14; player.h = 12;
+        const farRect = { x: 200, y: 0, w: 10, h: 10 };
+        assert('rectHitsPlayer (longe) == false', !rectHitsPlayer(farRect));
+
+        // circleHitsPlayer: circle centered on player with r=2 must be true
+        const nearCircle = { cx: player.x, cy: player.y, r: 2 };
+        assert('circleHitsPlayer (no centro) == true', circleHitsPlayer(nearCircle));
+
+        // spawnPipe increases count by 1
+        const before = state.pipes.length; spawnPipe();
+        assert('spawnPipe adiciona 1', state.pipes.length === before + 1);
+      } catch (e){
+        console.error('Self-test error', e);
+      } finally {
+        // restore player
+        player.x = savePlayer.x; player.y = savePlayer.y; player.w = savePlayer.w; player.h = savePlayer.h;
+      }
+
+      const passed = results.filter(r=>r.passed).length;
+      const summary = `${passed}/${results.length} testes OK`;
+      console.table(results);
+      if(badge){
+        badge.textContent = summary;
+        badge.style.borderColor = passed === results.length ? 'rgba(255,255,255,.18)' : '#ff7272';
+        badge.style.background = passed === results.length ? 'rgba(0,0,0,.45)' : 'rgba(60,0,0,.55)';
+      }
+    }
+
+    // Boot
+    reset();
+    // run quick tests once on boot (não interfere no jogo)
+    runSelfTests();
+
+    // polite autoplay draw of menu frame
+    draw();
+  })();
+  </script>
+</body>
+</html>
