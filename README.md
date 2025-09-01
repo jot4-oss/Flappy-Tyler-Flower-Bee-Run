@@ -14,18 +14,10 @@
 - Arte em pixel art inspirada na estética *Flower Boy*.
 - Jogabilidade simples, porém desafiadora.
 - Compatível com **PC e dispositivos móveis**.
-- Versão pronta para publicação na web (GitHub Pages, Itch.io, etc).
+- Versão pronta para web (GitHub Pages, Itch.io, etc).
 
 ---
 
-## 🚀 Publicação
-Este jogo é um arquivo **HTML único**, o que significa que pode ser publicado facilmente em:
-- **GitHub Pages**
-- **Itch.io**
-- **Netlify**
-- **Vercel**
-
-Basta enviar o arquivo `index.html` e o jogo estará pronto para jogar diretamente no navegador.
 
 ---
 
