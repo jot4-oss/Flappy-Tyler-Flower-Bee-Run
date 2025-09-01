@@ -22,7 +22,7 @@
 ---
 
 ## 📷 Preview
-*(adicione aqui uma captura de tela do jogo, por exemplo `screenshot.png`)*
+*<img width="419" height="464" alt="Image" src="https://github.com/user-attachments/assets/33a20730-ffd7-4f10-8808-4ce04d0a0cd1" />
 
 ---
 
